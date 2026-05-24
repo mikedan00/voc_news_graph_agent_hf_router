@@ -87,43 +87,72 @@ def items_from_free_text(text: str, source: str = "VOC") -> List[TextItem]:
     return items
 
 
+def safe_cell(value: Any) -> str:
+    """CSV/엑셀 셀 값을 안전하게 문자열로 변환합니다. NaN/None/숫자/날짜/혼합 타입 대응."""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return clean_text(str(value))
+
+
+def combine_row_values(row: pd.Series, max_chars: int = 2500) -> str:
+    """
+    본문 컬럼을 찾지 못했을 때 행 전체를 안전하게 하나의 텍스트로 합칩니다.
+    기존 df.astype(str).agg(" | ".join, axis=1)는 일부 pandas/Python 조합에서 TypeError가 날 수 있어 사용하지 않습니다.
+    """
+    parts: List[str] = []
+    for col, val in row.items():
+        s = safe_cell(val)
+        if s:
+            parts.append(f"{col}: {s}")
+    return " | ".join(parts)[:max_chars]
+
+
 def items_from_dataframe(df: pd.DataFrame, default_source: str = "CSV") -> List[TextItem]:
     if df is None or df.empty:
         return []
 
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
     lower_cols = {str(c).strip().lower(): c for c in df.columns}
-    title_col = first_existing(lower_cols, ["title", "제목", "subject", "headline"])
-    text_col = first_existing(lower_cols, ["text", "본문", "content", "내용", "voc", "message", "description", "summary"])
-    source_col = first_existing(lower_cols, ["source", "출처", "channel", "site"])
-    url_col = first_existing(lower_cols, ["url", "link", "링크"])
-    pub_col = first_existing(lower_cols, ["published", "date", "datetime", "작성일", "날짜"])
+    title_col = first_existing(lower_cols, ["title", "제목", "subject", "headline", "뉴스제목", "게시글제목"])
+    text_col = first_existing(lower_cols, ["text", "본문", "content", "내용", "voc", "message", "description", "summary", "댓글", "의견"])
+    source_col = first_existing(lower_cols, ["source", "출처", "channel", "site", "매체", "언론사"])
+    url_col = first_existing(lower_cols, ["url", "link", "링크", "주소"])
+    pub_col = first_existing(lower_cols, ["published", "date", "datetime", "작성일", "날짜", "시간", "등록일"])
 
     if text_col is None:
-        df = df.copy()
-        df["_combined_text"] = df.astype(str).agg(" | ".join, axis=1)
+        df["_combined_text"] = df.apply(combine_row_values, axis=1)
         text_col = "_combined_text"
 
     items: List[TextItem] = []
     for idx, row in df.iterrows():
-        title = clean_text(row.get(title_col, "")) if title_col else clean_text(str(row.get(text_col, ""))[:70])
-        text = clean_text(row.get(text_col, ""))
+        text = safe_cell(row.get(text_col, ""))
         if not text:
             continue
-        source = clean_text(row.get(source_col, default_source)) if source_col else default_source
-        url = clean_text(row.get(url_col, "")) if url_col else ""
-        published = clean_text(row.get(pub_col, "")) if pub_col else ""
+
+        title = safe_cell(row.get(title_col, "")) if title_col else ""
+        if not title:
+            title = clean_text(text[:70]) or f"row-{idx}"
+
+        source = safe_cell(row.get(source_col, default_source)) if source_col else default_source
+        url = safe_cell(row.get(url_col, "")) if url_col else ""
+        published = safe_cell(row.get(pub_col, "")) if pub_col else ""
+
         items.append(
             TextItem(
                 id=stable_id(source, title, text, url, prefix="csv"),
                 source=source or default_source,
-                title=title or f"row-{idx}",
+                title=title,
                 text=text,
                 url=url,
                 published=published,
             )
         )
     return deduplicate_items(items)
-
 
 def first_existing(lower_cols: Dict[str, Any], candidates: List[str]):
     for c in candidates:

@@ -119,7 +119,11 @@ with tab_collect:
 
         if uploaded:
             try:
-                csv_df = pd.read_csv(uploaded)
+                try:
+                    csv_df = pd.read_csv(uploaded)
+                except UnicodeDecodeError:
+                    uploaded.seek(0)
+                    csv_df = pd.read_csv(uploaded, encoding="cp949")
                 st.dataframe(csv_df.head(20), use_container_width=True)
             except Exception as e:
                 st.error(f"CSV 읽기 실패: {e}")
